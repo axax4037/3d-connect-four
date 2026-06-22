@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 立體四子棋 (線上連線修復版)</title>
+    <title>3D 立體四子棋 (連線版)</title>
     <style>
         body {
             margin: 0;
@@ -217,7 +217,7 @@
             }
         }
 
-        // --- 連線網路功能 (PeerJS) ---
+        // --- 🎯 終極連線網路功能 (嚴謹的握手協議) ---
         function createRoom() {
             if(peer) peer.destroy();
             const code = Math.floor(1000 + Math.random() * 9000).toString();
@@ -235,24 +235,12 @@
 
             peer.on('connection', (connection) => {
                 conn = connection;
-                // 🎯 關鍵修復：必須等待通道完全開啟後，才能傳送資料
-                conn.on('open', () => {
-                    isOnline = true;
-                    isHost = true;
-                    setupConnectionListeners();
-                    
-                    myOnlineRole = Math.random() < 0.5 ? 1 : 2;
-                    
-                    document.getElementById('online-waiting').style.display = 'none';
-                    document.getElementById('online-setup').style.display = 'block';
-                    startOnlineGame();
-                    
-                    conn.send({ type: 'start', hostRole: myOnlineRole });
-                });
+                // 收到連線立刻註冊監聽器，準備接收對方的 client_ready 訊號
+                setupConnectionListeners();
             });
 
             peer.on('error', (err) => {
-                alert("建立房間失敗，請重試！");
+                alert("建立房間失敗，請檢查網路後重試！");
                 handleModeChange();
             });
         }
@@ -267,25 +255,48 @@
             peer = new Peer();
             peer.on('open', () => {
                 conn = peer.connect(PEER_PREFIX + code);
+                
+                // 連線建立的瞬間立刻註冊監聽器，避免漏接房主的 start 訊號
+                setupConnectionListeners();
+                
                 conn.on('open', () => {
-                    isOnline = true;
-                    isHost = false;
-                    setupConnectionListeners();
+                    // 通道一打開，馬上通知房主「我準備好了」
+                    conn.send({ type: 'client_ready' });
                     document.getElementById('status').innerText = "連線成功！等待房主開局...";
                 });
             });
 
             peer.on('error', (err) => {
-                alert("找不到該房間或網路錯誤！");
+                alert("找不到該房間或連線已被佔用！");
                 document.getElementById('status').innerText = "請建立或加入房間";
             });
         }
 
         function setupConnectionListeners() {
             conn.on('data', (data) => {
-                if (data.type === 'start') {
-                    myOnlineRole = data.hostRole === 1 ? 2 : 1;
+                if (data.type === 'client_ready') {
+                    // [房主端] 收到朋友的確認準備訊號
+                    isOnline = true;
+                    isHost = true;
+                    myOnlineRole = Math.random() < 0.5 ? 1 : 2; // 隨機決定房主顏色
+                    
+                    document.getElementById('online-waiting').style.display = 'none';
+                    document.getElementById('online-setup').style.display = 'block';
+                    
+                    // 開始本地遊戲
                     startOnlineGame();
+                    
+                    // 發送正式開局與顏色分配給朋友
+                    conn.send({ type: 'start', hostRole: myOnlineRole });
+                    
+                } else if (data.type === 'start') {
+                    // [朋友端] 收到房主的開局與分配顏色
+                    isOnline = true;
+                    isHost = false;
+                    myOnlineRole = data.hostRole === 1 ? 2 : 1; // 拿與房主相反的顏色
+                    
+                    startOnlineGame();
+                    
                 } else if (data.type === 'move') {
                     executeMoveLocally(data.x, data.y);
                 } else if (data.type === 'undo_req') {
