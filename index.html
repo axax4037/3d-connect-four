@@ -76,6 +76,28 @@
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
             transition: 0.3s;
         }
+        #ai-loader {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 8px;
+            color: #ffcc80;
+            font-size: 13px;
+        }
+        .loader-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: loaderPulse 0.9s infinite alternate;
+        }
+        .loader-dot:nth-child(2) { animation-delay: 0.2s; }
+        .loader-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes loaderPulse {
+            from { opacity: 0.25; transform: translateY(0); }
+            to { opacity: 1; transform: translateY(-4px); }
+        }
         .instructions {
             margin-top: 15px;
             font-size: 12px;
@@ -106,7 +128,7 @@
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -155,6 +177,12 @@
         </div>
 
         <div id="status">準備開始...</div>
+        <div id="ai-loader" aria-live="polite">
+            <span>AI 思考中</span>
+            <span class="loader-dot"></span>
+            <span class="loader-dot"></span>
+            <span class="loader-dot"></span>
+        </div>
 
         <div class="instructions">
             <strong>🖱️ 滑鼠：</strong> 左鍵落子 / 右鍵旋轉視角<br>
@@ -192,6 +220,20 @@
         let isOnline = false;
         let isHost = false; 
         let myOnlineRole = 0; // 1 = 黑棋, 2 = 白棋
+        let onlineGameStarted = false;
+        let onlineRoundId = null;
+
+        function setAILoader(visible) {
+            const loader = document.getElementById('ai-loader');
+            if (loader) loader.style.display = visible ? 'flex' : 'none';
+        }
+
+        function setOnlineStatus(text, background = '#222', color = '#fff') {
+            const status = document.getElementById('status');
+            status.innerText = text;
+            status.style.backgroundColor = background;
+            status.style.color = color;
+        }
         
         // --- 介面控制 ---
         function handleModeChange() {
@@ -217,112 +259,208 @@
             }
         }
 
-        // --- 🎯 終極連線網路功能 (嚴謹的握手協議) ---
+        // --- 🎯 線上連線功能（可靠握手與同步開局） ---
         function createRoom() {
-            if(peer) peer.destroy();
+            disconnectOnline();
             const code = Math.floor(1000 + Math.random() * 9000).toString();
-            
+
+            isHost = true;
+            onlineGameStarted = false;
+            onlineRoundId = null;
             document.getElementById('online-setup').style.display = 'none';
             document.getElementById('online-waiting').style.display = 'block';
             document.getElementById('my-room-code').innerText = code;
-            document.getElementById('status').innerText = "連接伺服器中...";
-            
+            setOnlineStatus('連接伺服器中...');
+
             peer = new Peer(PEER_PREFIX + code);
-            
+
             peer.on('open', () => {
-                document.getElementById('status').innerText = "等待對手加入...";
+                setOnlineStatus('等待對手加入...', '#7a4b00');
             });
 
             peer.on('connection', (connection) => {
+                // 一個房間只允許一位對手，避免第二條連線覆蓋遊戲狀態。
+                if (conn && conn.open) {
+                    connection.close();
+                    return;
+                }
                 conn = connection;
-                // 收到連線立刻註冊監聽器，準備接收對方的 client_ready 訊號
-                setupConnectionListeners();
+                setupConnectionListeners(connection);
             });
 
             peer.on('error', (err) => {
-                alert("建立房間失敗，請檢查網路後重試！");
-                handleModeChange();
+                console.error('PeerJS host error:', err);
+                const message = err && err.type === 'unavailable-id'
+                    ? '此房間代碼剛好被使用，請重新建立房間。'
+                    : '建立房間失敗，請檢查網路後重試！';
+                alert(message);
+                disconnectOnline();
+                document.getElementById('online-setup').style.display = 'block';
+                document.getElementById('online-waiting').style.display = 'none';
+                setOnlineStatus('請重新建立或加入房間');
             });
         }
 
         function joinRoom() {
-            const code = document.getElementById('join-code').value;
-            if(code.length !== 4) return alert("請輸入 4 位數代碼！");
-            
-            document.getElementById('status').innerText = "連線中...";
-            if(peer) peer.destroy();
-            
+            const codeInput = document.getElementById('join-code');
+            const code = codeInput.value.trim();
+            if (!/^\d{4}$/.test(code)) return alert('請輸入 4 位數字代碼！');
+
+            disconnectOnline();
+            isHost = false;
+            onlineGameStarted = false;
+            onlineRoundId = null;
+            codeInput.value = code;
+            setOnlineStatus('連線中...');
+
             peer = new Peer();
             peer.on('open', () => {
-                conn = peer.connect(PEER_PREFIX + code);
-                
-                // 連線建立的瞬間立刻註冊監聽器，避免漏接房主的 start 訊號
-                setupConnectionListeners();
-                
-                conn.on('open', () => {
-                    // 通道打開，馬上通知房主「我準備好了」
-                    conn.send({ type: 'client_ready' });
-                    document.getElementById('status').innerText = "連線成功！等待房主開局...";
-                });
+                conn = peer.connect(PEER_PREFIX + code, { reliable: true });
+                setupConnectionListeners(conn);
             });
 
             peer.on('error', (err) => {
-                alert("找不到該房間或連線已被佔用！");
-                document.getElementById('status').innerText = "請建立或加入房間";
+                console.error('PeerJS client error:', err);
+                alert('找不到該房間，或目前無法建立連線！');
+                disconnectOnline();
+                setOnlineStatus('請確認代碼後重新加入');
             });
         }
 
-        function setupConnectionListeners() {
-            conn.on('data', (data) => {
+        function setupConnectionListeners(connection) {
+            if (!connection || connection.__gameListenersBound) return;
+            connection.__gameListenersBound = true;
+
+            connection.on('open', () => {
+                if (connection !== conn) return;
+
+                if (isHost) {
+                    setOnlineStatus('對手已連線，等待準備確認...', '#7a4b00');
+                } else {
+                    // 客戶端只在資料通道真正開啟後送出 ready，避免房主過早開局。
+                    connection.send({ type: 'client_ready', protocol: 2 });
+                    setOnlineStatus('連線成功！等待房主開局...', '#0f3460');
+                }
+            });
+
+            connection.on('data', (data) => {
+                if (connection !== conn || !data || typeof data.type !== 'string') return;
+
                 if (data.type === 'client_ready') {
-                    // [房主端] 收到朋友的確認準備訊號
+                    if (!isHost) return;
+
+                    // 若 ready 被重送，回傳同一局資訊，不重置棋盤。
+                    if (onlineGameStarted && onlineRoundId && myOnlineRole) {
+                        connection.send({
+                            type: 'start',
+                            hostRole: myOnlineRole,
+                            roundId: onlineRoundId
+                        });
+                        return;
+                    }
+
                     isOnline = true;
-                    isHost = true;
-                    myOnlineRole = Math.random() < 0.5 ? 1 : 2; // 隨機決定房主顏色
-                    
+                    myOnlineRole = Math.random() < 0.5 ? 1 : 2;
+                    onlineRoundId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
                     document.getElementById('online-waiting').style.display = 'none';
                     document.getElementById('online-setup').style.display = 'block';
-                    
-                    // 開始本地遊戲
+
+                    // 先把正式開局封包送出，再啟動房主本地棋盤。
+                    connection.send({
+                        type: 'start',
+                        hostRole: myOnlineRole,
+                        roundId: onlineRoundId
+                    });
                     startOnlineGame();
-                    
-                    // 發送正式開局與顏色分配給朋友
-                    conn.send({ type: 'start', hostRole: myOnlineRole });
-                    
+
                 } else if (data.type === 'start') {
-                    // [朋友端] 收到房主的開局與分配顏色
+                    if (isHost || (data.hostRole !== 1 && data.hostRole !== 2)) return;
+
+                    // 同一局的 start 重送只需回覆，不可再次清空棋盤。
+                    if (onlineGameStarted && onlineRoundId === data.roundId) {
+                        connection.send({ type: 'start_ack', roundId: onlineRoundId });
+                        return;
+                    }
+
                     isOnline = true;
-                    isHost = false;
-                    myOnlineRole = data.hostRole === 1 ? 2 : 1; // 拿與房主相反的顏色
-                    
+                    myOnlineRole = data.hostRole === 1 ? 2 : 1;
+                    onlineRoundId = data.roundId || `${Date.now()}-legacy`;
                     startOnlineGame();
-                    
+                    connection.send({ type: 'start_ack', roundId: onlineRoundId });
+
+                } else if (data.type === 'start_ack') {
+                    if (isHost && data.roundId === onlineRoundId) {
+                        updateStatusUI();
+                    }
+
                 } else if (data.type === 'move') {
+                    if (!isOnline || !onlineGameStarted || !gameActive) return;
+                    if (data.roundId && data.roundId !== onlineRoundId) return;
+                    if (!Number.isInteger(data.x) || !Number.isInteger(data.y)) return;
+                    if (data.x < 0 || data.x >= SIZE || data.y < 0 || data.y >= SIZE) return;
+                    if (board[data.x][data.y].length >= SIZE) return;
+                    // 僅在輪到對手時接受遠端落子，防止重複或亂序封包。
+                    if (currentPlayer === myOnlineRole) return;
+                    if (data.player && data.player !== currentPlayer) return;
                     executeMoveLocally(data.x, data.y);
+
                 } else if (data.type === 'undo_req') {
-                    showModal("對方請求悔棋，是否同意？", true);
+                    showModal('對方請求悔棋，是否同意？', true);
+
                 } else if (data.type === 'undo_ans') {
                     if (data.ans === true) {
                         closeModal();
                         executeUndoLocally();
                     } else {
-                        showModal("對方拒絕了你的悔棋請求。", false);
+                        showModal('對方拒絕了你的悔棋請求。', false);
                     }
                 }
             });
 
-            conn.on('close', () => {
-                alert("對方已斷線！");
-                handleModeChange();
+            connection.on('error', (err) => {
+                console.error('DataConnection error:', err);
+                if (connection === conn) setOnlineStatus('連線發生錯誤，請重新加入房間', '#8b1e1e');
+            });
+
+            connection.on('close', () => {
+                if (connection.__intentionalClose || connection !== conn) return;
+
+                conn = null;
+                isOnline = false;
+                onlineGameStarted = false;
+                onlineRoundId = null;
+                myOnlineRole = 0;
+                gameActive = false;
+                previewP1.visible = false;
+                previewP2.visible = false;
+                document.getElementById('btn-restart').disabled = true;
+                document.getElementById('online-setup').style.display = 'block';
+                document.getElementById('online-waiting').style.display = 'none';
+                setOnlineStatus('對方已斷線，請重新建立或加入房間', '#8b1e1e');
+                alert('對方已斷線！');
             });
         }
 
         function disconnectOnline() {
-            if(conn) conn.close();
-            if(peer) peer.destroy();
+            const oldConn = conn;
+            const oldPeer = peer;
+            conn = null;
+            peer = null;
+
+            if (oldConn) {
+                oldConn.__intentionalClose = true;
+                try { oldConn.close(); } catch (e) { console.warn(e); }
+            }
+            if (oldPeer) {
+                try { oldPeer.destroy(); } catch (e) { console.warn(e); }
+            }
+
             isOnline = false;
             isHost = false;
             myOnlineRole = 0;
+            onlineGameStarted = false;
+            onlineRoundId = null;
             document.getElementById('online-setup').style.display = 'block';
             document.getElementById('online-waiting').style.display = 'none';
             document.getElementById('join-code').value = '';
@@ -351,14 +489,14 @@
             if (isOnline) {
                 showModal("已發送悔棋請求，等待對方同意...", false);
                 document.getElementById('modal-ok-only').style.display = 'none'; 
-                conn.send({ type: 'undo_req' });
+                if (conn && conn.open) conn.send({ type: 'undo_req' });
             } else {
                 executeUndoLocally();
             }
         }
 
         function respondUndo(isAccept) {
-            conn.send({ type: 'undo_ans', ans: isAccept });
+            if (conn && conn.open) conn.send({ type: 'undo_ans', ans: isAccept });
             closeModal();
             if (isAccept) executeUndoLocally();
         }
@@ -652,6 +790,7 @@
 
         // --- 遊戲流程 ---
         function startOnlineGame() {
+            onlineGameStarted = true;
             board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
             currentPlayer = 1; 
             gameActive = true;
@@ -674,9 +813,10 @@
 
         function resetGame() {
             if (isOnline) {
-                if (isHost) {
+                if (isHost && conn && conn.open) {
                     myOnlineRole = Math.random() < 0.5 ? 1 : 2;
-                    conn.send({ type: 'start', hostRole: myOnlineRole });
+                    onlineRoundId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                    conn.send({ type: 'start', hostRole: myOnlineRole, roundId: onlineRoundId });
                     startOnlineGame();
                 }
                 return;
@@ -708,7 +848,7 @@
                     document.getElementById('status').innerText = "🤖 電腦先手，思考中...";
                     document.getElementById('status').style.backgroundColor = "#d35400";
                     document.getElementById('status').style.color = "#fff";
-                    document.getElementById('ai-loader').style.display = "block";
+                    setAILoader(true);
                     updatePreview(); 
                     setTimeout(makeAIMove, 600); 
                     return;
@@ -738,7 +878,16 @@
 
         function initiateMove(x, y) {
             if (board[x][y].length >= SIZE) return; 
-            if (isOnline) conn.send({ type: 'move', x: x, y: y });
+            if (isOnline) {
+                if (!conn || !conn.open) return;
+                conn.send({
+                    type: 'move',
+                    x: x,
+                    y: y,
+                    player: currentPlayer,
+                    roundId: onlineRoundId
+                });
+            }
             executeMoveLocally(x, y);
         }
 
@@ -778,7 +927,7 @@
                 document.getElementById('status').innerText = "🤖 AI 思考中...";
                 document.getElementById('status').style.backgroundColor = "#d35400";
                 document.getElementById('status').style.color = "#fff";
-                document.getElementById('ai-loader').style.display = "block";
+                setAILoader(true);
                 document.getElementById('btn-undo').disabled = true; 
                 setTimeout(makeAIMove, 100);
             }
@@ -824,7 +973,7 @@
 
         function updateStatusUI() {
             const statusBox = document.getElementById('status');
-            document.getElementById('ai-loader').style.display = "none";
+            setAILoader(false);
 
             if (isOnline) {
                 let myColor = myOnlineRole === 1 ? "黑棋" : "白棋";
@@ -856,7 +1005,7 @@
             previewP1.visible = false;
             previewP2.visible = false;
             const statusBox = document.getElementById('status');
-            document.getElementById('ai-loader').style.display = "none";
+            setAILoader(false);
             statusBox.innerText = msg;
             
             if(isOnline) {
