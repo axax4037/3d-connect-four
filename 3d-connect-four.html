@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 立體四子棋 (小六程度 AI)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: "Microsoft JhengHei", sans-serif;
+            background-color: #161623;
+            color: #fff;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 35, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.7);
+            z-index: 10;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            width: 280px;
+        }
+        h2 { margin: 0 0 15px 0; font-size: 20px; color: #e94560; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+        .form-group { margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        label { font-size: 14px; font-weight: bold; color: #ccc;}
+        select {
+            padding: 6px 10px;
+            font-size: 13px;
+            border-radius: 6px;
+            background: #2a2a4a;
+            color: #fff;
+            border: 1px solid #5a5a8a;
+            cursor: pointer;
+            outline: none;
+            width: 140px;
+        }
+        .btn-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        button {
+            padding: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            background-color: #0f3460;
+            color: white;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }
+        button.primary { grid-column: span 2; background-color: #e94560; }
+        button:hover { filter: brightness(1.2); transform: translateY(-2px); }
+        button:active { transform: translateY(0); }
+        button:disabled { background-color: #555; cursor: not-allowed; transform: none; filter: none; }
+        
+        #status {
+            margin-top: 15px;
+            padding: 12px;
+            text-align: center;
+            border-radius: 6px;
+            font-weight: bold;
+            background-color: #222;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+            transition: 0.3s;
+        }
+        .instructions {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.6;
+        }
+        b { color: #ddd; }
+        #ai-loader {
+            display: none;
+            margin-top: 10px;
+            text-align: center;
+            color: #ff9800;
+            font-weight: bold;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h2>3D 立體四子棋</h2>
+        
+        <div class="form-group">
+            <label>對戰模式</label>
+            <select id="modeSelect" onchange="resetGame()">
+                <option value="pva" selected>玩家 vs 電腦</option>
+                <option value="pvp">玩家 vs 玩家</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>電腦難度</label>
+            <select id="aiLevel">
+                <option value="1">L1 新手 (超級簡單)</option>
+                <option value="2">L2 進階 (攻防)</option>
+                <option value="3">L3 高手 (推演)</option>
+                <option value="4" selected>L4 大師 (大局)</option>
+            </select>
+        </div>
+
+        <div class="btn-grid">
+            <button class="primary" onclick="resetGame()">🔄 重新開始</button>
+            <button id="btn-undo" onclick="undoMove()" disabled>⏪ 悔棋</button>
+            <button onclick="resetCamera()">📷 視角重設</button>
+            <button id="btn-sound" onclick="toggleSound()">🔊 音效: 開</button>
+        </div>
+
+        <div id="status">準備開始...</div>
+        <div id="ai-loader">🤖 AI 思考中...</div>
+
+        <div class="instructions">
+            <strong>⌨️ 鍵盤：</strong> 方向鍵移動 / 空白鍵落子<br>
+            <strong>🖱️ 滑鼠：</strong> 左鍵落子 / 右鍵旋轉視角<br>
+            滾輪縮放 / 滾輪按住平移
+        </div>
+    </div>
+
+    <script>
+        // --- 核心邏輯變數 ---
+        const SIZE = 5;
+        let board = []; 
+        let currentPlayer = 1; 
+        let gameActive = false;
+        let isAITurn = false;
+        let hoveredCol = { x: 2, y: 2 }; 
+        let moveHistory = []; 
+
+        // 音效系統
+        let audioCtx = null;
+        let soundEnabled = true;
+
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            document.getElementById('btn-sound').innerText = soundEnabled ? "🔊 音效: 開" : "🔇 音效: 關";
+        }
+
+        function playSound(type) {
+            if (!soundEnabled) return;
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            if (type === 'drop') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+            } else if (type === 'win') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); 
+                osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.1); 
+                osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.2); 
+                osc.frequency.setValueAtTime(1046.50, audioCtx.currentTime + 0.3); 
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.8);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.8);
+            }
+        }
+
+        // 預先計算 4 子連線
+        const winningLines = [];
+        function precomputeWinningLines() {
+            const dirs = [
+                [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,-1,0], [1,0,1], 
+                [1,0,-1], [0,1,1], [0,1,-1], [1,1,1], [1,1,-1], [1,-1,1], [-1,1,1]
+            ];
+            for (let x = 0; x < SIZE; x++) {
+                for (let y = 0; y < SIZE; y++) {
+                    for (let z = 0; z < SIZE; z++) {
+                        for (let d of dirs) {
+                            let line = [];
+                            for (let i = 0; i < 4; i++) {
+                                let nx = x + d[0] * i, ny = y + d[1] * i, nz = z + d[2] * i;
+                                if (nx >= 0 && nx < SIZE && ny >= 0 && ny < SIZE && nz >= 0 && nz < SIZE) {
+                                    line.push([nx, ny, nz]);
+                                } else break;
+                            }
+                            if (line.length === 4) winningLines.push(line);
+                        }
+                    }
+                }
+            }
+        }
+        precomputeWinningLines();
+
+        // --- Three.js 場景設定 ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x161623, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x161623);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08; 
+        controls.maxPolarAngle = Math.PI / 2 - 0.05; 
+        controls.minDistance = 6; 
+        controls.maxDistance = 25; 
+        controls.mouseButtons = { LEFT: THREE.MOUSE.NONE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+        window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        function resetCamera() {
+            camera.position.set(7, 8, 9);
+            controls.target.set(0, 2.5, 0);
+        }
+
+        // 燈光
+        scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        dirLight.position.set(5, 12, 8);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 1024;
+        dirLight.shadow.mapSize.height = 1024;
+        scene.add(dirLight);
+
+        // 加大底座以容納方向文字
+        const baseGeo = new THREE.BoxGeometry(6.6, 0.5, 6.6);
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.8, metalness: 0.1 });
+        const base = new THREE.Mesh(baseGeo, baseMat);
+        base.position.y = -0.25;
+        base.receiveShadow = true;
+        scene.add(base);
+
+        const gridHelper = new THREE.GridHelper(5, 5, 0x3d2314, 0x3d2314);
+        gridHelper.position.y = 0.01; 
+        scene.add(gridHelper);
+
+        function createDirectionLabel(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = 'rgba(0,0,0,0)'; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = 'bold 50px "Microsoft JhengHei", sans-serif';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            ctx.shadowBlur = 6;
+            ctx.fillStyle = '#ffcc00'; 
+            ctx.fillText(text, 256, 64);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            
+            const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
+            const plane = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 0.875), material);
+            plane.rotation.x = -Math.PI / 2;
+            return plane;
+        }
+
+        const offset = 2.9; 
+        
+        const labelUp = createDirectionLabel("⬆ 前方 (W / ↑)");
+        labelUp.position.set(0, 0.015, -offset);
+        labelUp.rotation.z = 0; 
+        scene.add(labelUp);
+
+        const labelDown = createDirectionLabel("⬇ 後方 (S / ↓)");
+        labelDown.position.set(0, 0.015, offset);
+        labelDown.rotation.z = 0; 
+        scene.add(labelDown);
+
+        const labelLeft = createDirectionLabel("⬅ 左側 (A / ←)");
+        labelLeft.position.set(-offset, 0.015, 0);
+        labelLeft.rotation.z = -Math.PI / 2; 
+        scene.add(labelLeft);
+
+        const labelRight = createDirectionLabel("右側 (D / →) ➡");
+        labelRight.position.set(offset, 0.015, 0);
+        labelRight.rotation.z = Math.PI / 2; 
+        scene.add(labelRight);
+
+        // 透明滑鼠感應區 (hitbox)
+        const columns = [];
+        const colGeo = new THREE.BoxGeometry(0.95, 4.3, 0.95);
+        const colHitboxMat = new THREE.MeshBasicMaterial({ visible: false });
+
+        for (let x = 0; x < SIZE; x++) {
+            for (let y = 0; y < SIZE; y++) {
+                const hitbox = new THREE.Mesh(colGeo, colHitboxMat);
+                hitbox.position.set(x - 2, 2.15, y - 2);
+                hitbox.userData = { cx: x, cy: y };
+                scene.add(hitbox);
+                columns.push(hitbox);
+            }
+        }
+
+        let pieceMeshes = [];
+        const pieceHeight = 0.8;
+        const stackStep = 0.85; 
+        const pieceGeo = new THREE.CylinderGeometry(0.42, 0.42, pieceHeight, 32);
+        const edgesGeo = new THREE.EdgesGeometry(pieceGeo, 30); 
+
+        const blackMat = new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.3, metalness: 0.5 });
+        const whiteMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.3, metalness: 0.2 });
+        const goldMat = new THREE.MeshStandardMaterial({ color: 0xffd700, emissive: 0xaa8800, roughness: 0.2, metalness: 0.8 });
+
+        function createPieceGroup(player, isPreview = false) {
+            const group = new THREE.Group();
+            let mat = isPreview ? 
+                new THREE.MeshStandardMaterial({ color: player === 1 ? 0x151515 : 0xe8e8e8, transparent: true, opacity: 0.5 }) : 
+                (player === 1 ? blackMat : whiteMat);
+            
+            const mesh = new THREE.Mesh(pieceGeo, mat);
+            if (!isPreview) { mesh.castShadow = true; mesh.receiveShadow = true; }
+            mesh.name = "solid";
+            group.add(mesh);
+
+            let edgeMat = new THREE.LineBasicMaterial({ color: player === 1 ? 0x444444 : 0x999999, transparent: isPreview, opacity: isPreview ? 0.5 : 1.0 });
+            const edges = new THREE.LineSegments(edgesGeo, edgeMat);
+            edges.name = "edge";
+            group.add(edges);
+
+            return group;
+        }
+
+        const previewP1 = createPieceGroup(1, true); previewP1.visible = false; scene.add(previewP1);
+        const previewP2 = createPieceGroup(2, true); previewP2.visible = false; scene.add(previewP2);
+
+        // --- 互動邏輯 ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function updateMouse(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+
+        window.addEventListener('keydown', (event) => {
+            if (isAITurn) return;
+            if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"].includes(event.code)) event.preventDefault();
+            if (!gameActive && event.code !== 'Space') return; 
+
+            if (!hoveredCol) hoveredCol = { x: 2, y: 2 };
+            let { x, y } = hoveredCol;
+
+            if (event.code === 'ArrowUp' || event.code === 'KeyW') y = Math.max(0, y - 1);
+            else if (event.code === 'ArrowDown' || event.code === 'KeyS') y = Math.min(SIZE - 1, y + 1);
+            else if (event.code === 'ArrowLeft' || event.code === 'KeyA') x = Math.max(0, x - 1);
+            else if (event.code === 'ArrowRight' || event.code === 'KeyD') x = Math.min(SIZE - 1, x + 1);
+            else if (event.code === 'Space') {
+                if(gameActive) handleMove(x, y);
+                return;
+            }
+
+            hoveredCol = { x, y };
+            updatePreview();
+        });
+
+        window.addEventListener('click', (event) => {
+            if (!gameActive || isAITurn || event.target.tagName !== "CANVAS" || event.button !== 0) return;
+            updateMouse(event);
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(columns);
+            if (intersects.length > 0) {
+                const { cx, cy } = intersects[0].object.userData;
+                hoveredCol = { x: cx, y: cy }; 
+                handleMove(cx, cy);
+            }
+        });
+
+        window.addEventListener('pointermove', (event) => {
+            if (!gameActive || isAITurn || event.target.tagName !== "CANVAS") return;
+            updateMouse(event);
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(columns);
+            if (intersects.length > 0) {
+                const { cx, cy } = intersects[0].object.userData;
+                hoveredCol = { x: cx, y: cy };
+                updatePreview();
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 核心遊戲流程與歷史紀錄 ---
+        function resetGame() {
+            board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
+            gameActive = true;
+            isAITurn = false;
+            hoveredCol = { x: 2, y: 2 }; 
+            moveHistory = [];
+
+            resetHighlight();
+            
+            blackMat.transparent = false;
+            blackMat.opacity = 1;
+            whiteMat.transparent = false;
+            whiteMat.opacity = 1;
+
+            pieceMeshes.forEach(mesh => scene.remove(mesh));
+            pieceMeshes = [];
+
+            resetCamera();
+            document.getElementById('btn-undo').disabled = true;
+
+            const mode = document.getElementById('modeSelect').value;
+
+            if (mode === 'pva') {
+                currentPlayer = Math.random() < 0.5 ? 1 : 2;
+                
+                if (currentPlayer === 2) {
+                    isAITurn = true;
+                    updateStatusUI();
+                    document.getElementById('status').innerText = "🤖 電腦先手，思考中...";
+                    document.getElementById('status').style.backgroundColor = "#d35400";
+                    document.getElementById('status').style.color = "#fff";
+                    document.getElementById('ai-loader').style.display = "block";
+                    updatePreview(); 
+                    
+                    setTimeout(makeAIMove, 600); 
+                    return;
+                }
+            } else {
+                currentPlayer = 1;
+            }
+
+            updateStatusUI();
+            updatePreview(); 
+        }
+
+        function undoMove() {
+            if (moveHistory.length === 0 || isAITurn) return;
+            const mode = document.getElementById('modeSelect').value;
+
+            if (!gameActive) {
+                gameActive = true;
+                resetHighlight();
+            }
+
+            if (mode === 'pva') {
+                revertOneStep();
+                if (moveHistory.length > 0 && currentPlayer === 2) revertOneStep();
+            } else {
+                revertOneStep();
+            }
+
+            updateStatusUI();
+            updatePreview();
+            document.getElementById('btn-undo').disabled = moveHistory.length === 0;
+        }
+
+        function revertOneStep() {
+            if (moveHistory.length === 0) return;
+            const lastMove = moveHistory.pop();
+            board[lastMove.x][lastMove.y].pop();
+            scene.remove(lastMove.mesh);
+            pieceMeshes = pieceMeshes.filter(m => m !== lastMove.mesh);
+            currentPlayer = lastMove.player;
+        }
+
+        function updatePreview() {
+            previewP1.visible = false;
+            previewP2.visible = false;
+            if (!gameActive || isAITurn || hoveredCol === null) return;
+
+            const { x, y } = hoveredCol;
+            if (board[x][y].length >= SIZE) return;
+
+            const z = board[x][y].length;
+            const activePreview = currentPlayer === 1 ? previewP1 : previewP2;
+            const yPos = (z * stackStep) + (pieceHeight / 2);
+            activePreview.position.set(x - 2, yPos, y - 2); 
+            activePreview.visible = true;
+        }
+
+        function handleMove(x, y) {
+            if (board[x][y].length >= SIZE) return; 
+
+            const z = board[x][y].length;
+            const playerToMove = currentPlayer;
+            board[x][y].push(playerToMove);
+            
+            const pieceMesh = placePieceVisual(x, y, z, playerToMove);
+            playSound('drop');
+
+            moveHistory.push({ x, y, z, player: playerToMove, mesh: pieceMesh });
+            document.getElementById('btn-undo').disabled = false;
+
+            const winResult = checkWinLogic(playerToMove);
+            if (winResult.win) {
+                previewP1.visible = false;
+                previewP2.visible = false;
+                highlightWinningLine(winResult.line);
+                playSound('win');
+                endGame(`🎉 遊戲結束！${playerToMove === 1 ? '黑棋 (玩家1)' : '白棋 (玩家2/電腦)'} 獲勝！`, playerToMove);
+                return;
+            }
+
+            currentPlayer = currentPlayer === 1 ? 2 : 1;
+            updateStatusUI();
+            updatePreview(); 
+
+            const mode = document.getElementById('modeSelect').value;
+            if (mode === 'pva' && currentPlayer === 2 && gameActive) {
+                isAITurn = true;
+                previewP1.visible = false;
+                previewP2.visible = false;
+                document.getElementById('status').innerText = "🤖 AI 思考中...";
+                document.getElementById('status').style.backgroundColor = "#d35400";
+                document.getElementById('status').style.color = "#fff";
+                document.getElementById('ai-loader').style.display = "block";
+                document.getElementById('btn-undo').disabled = true; 
+                
+                setTimeout(makeAIMove, 100);
+            }
+        }
+
+        function placePieceVisual(x, y, z, player) {
+            const piece = createPieceGroup(player, false);
+            piece.userData = { x, y, z, player };
+            const yPos = (z * stackStep) + (pieceHeight / 2);
+            piece.position.set(x - 2, yPos, y - 2); 
+            scene.add(piece);
+            pieceMeshes.push(piece);
+            return piece;
+        }
+
+        function highlightWinningLine(line) {
+            const winSet = new Set(line.map(pt => `${pt[0]},${pt[1]},${pt[2]}`));
+            
+            pieceMeshes.forEach(group => {
+                const { x, y, z } = group.userData;
+                const solidMesh = group.children.find(c => c.name === "solid");
+                const edgeMesh = group.children.find(c => c.name === "edge");
+
+                if (winSet.has(`${x},${y},${z}`)) {
+                    solidMesh.material = goldMat; 
+                    edgeMesh.material.color.setHex(0xffffff); 
+                } else {
+                    solidMesh.material.transparent = true;
+                    solidMesh.material.opacity = 0.3;
+                    edgeMesh.material.transparent = true;
+                    edgeMesh.material.opacity = 0.1;
+                }
+            });
+        }
+
+        function resetHighlight() {
+            pieceMeshes.forEach(group => {
+                const { player } = group.userData;
+                const solidMesh = group.children.find(c => c.name === "solid");
+                const edgeMesh = group.children.find(c => c.name === "edge");
+                
+                solidMesh.material = player === 1 ? blackMat : whiteMat;
+                solidMesh.material.transparent = false;
+                solidMesh.material.opacity = 1;
+                
+                edgeMesh.material.color.setHex(player === 1 ? 0x444444 : 0x999999);
+                edgeMesh.material.transparent = false;
+                edgeMesh.material.opacity = 1;
+            });
+        }
+
+        function updateStatusUI() {
+            const statusBox = document.getElementById('status');
+            const aiLoader = document.getElementById('ai-loader');
+            aiLoader.style.display = "none";
+
+            if (currentPlayer === 1) {
+                statusBox.innerText = "輪到：玩家 1 (黑棋)";
+                statusBox.style.backgroundColor = "#181818";
+                statusBox.style.color = "#fff";
+                statusBox.style.border = "1px solid #555";
+            } else {
+                const isAI = document.getElementById('modeSelect').value === 'pva';
+                statusBox.innerText = isAI ? "輪到：電腦 AI (白棋)" : "輪到：玩家 2 (白棋)";
+                statusBox.style.backgroundColor = "#e0e0e0";
+                statusBox.style.color = "#000";
+                statusBox.style.border = "1px solid #aaa";
+            }
+        }
+
+        function endGame(msg, winningPlayer) {
+            gameActive = false;
+            previewP1.visible = false;
+            previewP2.visible = false;
+            const statusBox = document.getElementById('status');
+            const aiLoader = document.getElementById('ai-loader');
+            aiLoader.style.display = "none";
+            statusBox.innerText = msg;
+            statusBox.style.backgroundColor = winningPlayer === 1 ? "#181818" : "#e0e0e0";
+            statusBox.style.color = winningPlayer === 1 ? "#fff" : "#000";
+            document.getElementById('btn-undo').disabled = false;
+        }
+
+        function checkWinLogic(player) {
+            for (let line of winningLines) {
+                let match = 0;
+                let matchedPoints = [];
+                for (let pt of line) {
+                    if (board[pt[0]][pt[1]][pt[2]] === player) {
+                        match++;
+                        matchedPoints.push(pt);
+                    }
+                }
+                if (match === 4) return { win: true, line: matchedPoints };
+            }
+            return { win: false };
+        }
+
+        function makeAIMove() {
+            if (!gameActive) return;
+            const level = parseInt(document.getElementById('aiLevel').value);
+            let bestMove = getBestMove(level);
+
+            if (bestMove) {
+                handleMove(bestMove.x, bestMove.y);
+            }
+            isAITurn = false;
+            if(gameActive) document.getElementById('btn-undo').disabled = false;
+            updatePreview(); 
+        }
+
+        function getValidMoves() {
+            let moves = [];
+            for (let x = 0; x < SIZE; x++) {
+                for (let y = 0; y < SIZE; y++) {
+                    if (board[x][y].length < SIZE) moves.push({x, y});
+                }
+            }
+            return moves.sort((a, b) => {
+                return (Math.abs(2 - a.x) + Math.abs(2 - a.y)) - (Math.abs(2 - b.x) + Math.abs(2 - b.y));
+            });
+        }
+
+        // 🎯 [重點更新] 完美模擬小學六年級的決策腦袋
+        function getBestMove(level) {
+            let moves = getValidMoves();
+            if (moves.length === 0) return null;
+
+            let depth = (level === 1 || level === 2) ? 1 : level === 3 ? 2 : 3; 
+            let bestScore = -Infinity;
+            let bestMove = moves[0];
+            let alpha = -Infinity;
+            let beta = Infinity;
+
+            for (let move of moves) {
+                board[move.x][move.y].push(2); 
+                let score = checkWinLogic(2).win ? 100000 : minimax(depth - 1, alpha, beta, false);
+                board[move.x][move.y].pop(); 
+
+                if (level === 1) {
+                    // 小六程度：雜訊範圍在 -200 ~ +200 之間。
+                    // 這樣不會蓋過防守聽牌的 500 分，但會讓平時的佈局很憑感覺、缺乏長遠規劃。
+                    score += (Math.random() * 400 - 200);
+                } else if (level === 2) {
+                    score += (Math.random() * 100 - 50);
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMove = move;
+                }
+                alpha = Math.max(alpha, bestScore);
+            }
+            return bestMove;
+        }
+
+        function minimax(depth, alpha, beta, isMaximizing) {
+            if (checkWinLogic(2).win) return 10000 + depth;
+            if (checkWinLogic(1).win) return -10000 - depth;
+            if (depth === 0) return evaluateBoard();
+
+            let moves = getValidMoves();
+            if (moves.length === 0) return 0;
+
+            if (isMaximizing) {
+                let maxEval = -Infinity;
+                for (let move of moves) {
+                    board[move.x][move.y].push(2);
+                    let eval = minimax(depth - 1, alpha, beta, false);
+                    board[move.x][move.y].pop();
+                    maxEval = Math.max(maxEval, eval);
+                    alpha = Math.max(alpha, eval);
+                    if (beta <= alpha) break;
+                }
+                return maxEval;
+            } else {
+                let minEval = Infinity;
+                for (let move of moves) {
+                    board[move.x][move.y].push(1);
+                    let eval = minimax(depth - 1, alpha, beta, true);
+                    board[move.x][move.y].pop();
+                    minEval = Math.min(minEval, eval);
+                    beta = Math.min(beta, eval);
+                    if (beta <= alpha) break;
+                }
+                return minEval;
+            }
+        }
+
+        function evaluateBoard() {
+            let score = 0;
+            for (let line of winningLines) {
+                let p1 = 0, p2 = 0;
+                for (let pt of line) {
+                    let cell = board[pt[0]][pt[1]][pt[2]];
+                    if (cell === 1) p1++;
+                    else if (cell === 2) p2++;
+                }
+                if (p1 > 0 && p2 === 0) {
+                    if (p1 === 1) score -= 1;
+                    else if (p1 === 2) score -= 10;
+                    else if (p1 === 3) score -= 500; 
+                } else if (p2 > 0 && p1 === 0) {
+                    if (p2 === 1) score += 1;
+                    else if (p2 === 2) score += 10;
+                    else if (p2 === 3) score += 500;
+                }
+            }
+            for (let x = 0; x < SIZE; x++) {
+                for (let y = 0; y < SIZE; y++) {
+                    for (let z = 0; z < board[x][y].length; z++) {
+                        let centerWeight = (2 - Math.abs(2 - x)) + (2 - Math.abs(2 - y));
+                        if (board[x][y][z] === 2) score += centerWeight;
+                        else score -= centerWeight;
+                    }
+                }
+            }
+            return score;
+        }
+
+        resetGame();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); 
+            renderer.render(scene, camera);
+        }
+        animate();
+
+    </script>
+</body>
+</html>
