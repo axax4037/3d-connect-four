@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 立體四子棋 (線上隨機先手版)</title>
+    <title>3D 立體四子棋 (線上連線修復版)</title>
     <style>
         body {
             margin: 0;
@@ -190,7 +190,7 @@
         let peer = null;
         let conn = null;
         let isOnline = false;
-        let isHost = false; // 判斷是否有權限重新開始
+        let isHost = false; 
         let myOnlineRole = 0; // 1 = 黑棋, 2 = 白棋
         
         // --- 介面控制 ---
@@ -235,19 +235,20 @@
 
             peer.on('connection', (connection) => {
                 conn = connection;
-                isOnline = true;
-                isHost = true;
-                setupConnectionListeners();
-                
-                // 🎯 隨機決定房主拿什麼顏色 (1黑 或 2白)
-                myOnlineRole = Math.random() < 0.5 ? 1 : 2;
-                
-                document.getElementById('online-waiting').style.display = 'none';
-                document.getElementById('online-setup').style.display = 'block';
-                startOnlineGame();
-                
-                // 將房主的角色同步給加入的朋友
-                conn.send({ type: 'start', hostRole: myOnlineRole });
+                // 🎯 關鍵修復：必須等待通道完全開啟後，才能傳送資料
+                conn.on('open', () => {
+                    isOnline = true;
+                    isHost = true;
+                    setupConnectionListeners();
+                    
+                    myOnlineRole = Math.random() < 0.5 ? 1 : 2;
+                    
+                    document.getElementById('online-waiting').style.display = 'none';
+                    document.getElementById('online-setup').style.display = 'block';
+                    startOnlineGame();
+                    
+                    conn.send({ type: 'start', hostRole: myOnlineRole });
+                });
             });
 
             peer.on('error', (err) => {
@@ -283,7 +284,6 @@
         function setupConnectionListeners() {
             conn.on('data', (data) => {
                 if (data.type === 'start') {
-                    // 🎯 朋友的角色是房主的相反
                     myOnlineRole = data.hostRole === 1 ? 2 : 1;
                     startOnlineGame();
                 } else if (data.type === 'move') {
@@ -315,29 +315,6 @@
             document.getElementById('online-setup').style.display = 'block';
             document.getElementById('online-waiting').style.display = 'none';
             document.getElementById('join-code').value = '';
-        }
-
-        function startOnlineGame() {
-            board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
-            currentPlayer = 1; // 永遠由黑棋先手
-            gameActive = true;
-            isAITurn = false;
-            hoveredCol = { x: 2, y: 2 }; 
-            moveHistory = [];
-            
-            resetHighlight();
-            blackMat.transparent = false; blackMat.opacity = 1;
-            whiteMat.transparent = false; whiteMat.opacity = 1;
-            pieceMeshes.forEach(mesh => scene.remove(mesh));
-            pieceMeshes = [];
-            
-            resetCamera();
-            updateStatusUI();
-            updatePreview();
-            document.getElementById('btn-undo').disabled = true;
-            
-            // 房主才可點擊重新開始
-            document.getElementById('btn-restart').disabled = !isHost;
         }
 
         // --- 悔棋與彈窗邏輯 ---
@@ -505,7 +482,6 @@
         dirLight.shadow.mapSize.height = 1024;
         scene.add(dirLight);
 
-        // 底座與標籤
         const baseGeo = new THREE.BoxGeometry(6.6, 0.5, 6.6);
         const baseMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.8, metalness: 0.1 });
         const base = new THREE.Mesh(baseGeo, baseMat);
@@ -602,7 +578,6 @@
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         }
 
-        // 判斷當前是否允許我操作
         function canIPlay() {
             if (!gameActive || isAITurn) return false;
             if (isOnline && currentPlayer !== myOnlineRole) return false;
@@ -665,10 +640,30 @@
         });
 
         // --- 遊戲流程 ---
+        function startOnlineGame() {
+            board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
+            currentPlayer = 1; 
+            gameActive = true;
+            isAITurn = false;
+            hoveredCol = { x: 2, y: 2 }; 
+            moveHistory = [];
+            
+            resetHighlight();
+            blackMat.transparent = false; blackMat.opacity = 1;
+            whiteMat.transparent = false; whiteMat.opacity = 1;
+            pieceMeshes.forEach(mesh => scene.remove(mesh));
+            pieceMeshes = [];
+            
+            resetCamera();
+            updateStatusUI();
+            updatePreview();
+            document.getElementById('btn-undo').disabled = true;
+            document.getElementById('btn-restart').disabled = !isHost;
+        }
+
         function resetGame() {
             if (isOnline) {
                 if (isHost) {
-                    // 🎯 房主重開時，再次隨機決定房主的顏色
                     myOnlineRole = Math.random() < 0.5 ? 1 : 2;
                     conn.send({ type: 'start', hostRole: myOnlineRole });
                     startOnlineGame();
@@ -821,7 +816,6 @@
             document.getElementById('ai-loader').style.display = "none";
 
             if (isOnline) {
-                // 🎯 加入顏色提示
                 let myColor = myOnlineRole === 1 ? "黑棋" : "白棋";
                 if (currentPlayer === myOnlineRole) {
                     statusBox.innerText = `⭐ 換你落子 (你是${myColor})`;
