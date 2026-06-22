@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 立體四子棋 (小六程度 AI)</title>
+    <title>3D 立體四子棋 (線上隨機先手版)</title>
     <style>
         body {
             margin: 0;
@@ -23,21 +23,21 @@
             z-index: 10;
             backdrop-filter: blur(8px);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            width: 280px;
+            width: 300px;
         }
         h2 { margin: 0 0 15px 0; font-size: 20px; color: #e94560; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
         .form-group { margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         label { font-size: 14px; font-weight: bold; color: #ccc;}
-        select {
+        select, input[type="text"] {
             padding: 6px 10px;
             font-size: 13px;
             border-radius: 6px;
             background: #2a2a4a;
             color: #fff;
             border: 1px solid #5a5a8a;
-            cursor: pointer;
             outline: none;
             width: 140px;
+            box-sizing: border-box;
         }
         .btn-grid {
             display: grid;
@@ -59,12 +59,12 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 5px;
         }
-        button.primary { grid-column: span 2; background-color: #e94560; }
-        button:hover { filter: brightness(1.2); transform: translateY(-2px); }
-        button:active { transform: translateY(0); }
-        button:disabled { background-color: #555; cursor: not-allowed; transform: none; filter: none; }
+        button.primary { background-color: #e94560; }
+        button.full { grid-column: span 2; }
+        button:hover:not(:disabled) { filter: brightness(1.2); transform: translateY(-2px); }
+        button:active:not(:disabled) { transform: translateY(0); }
+        button:disabled { background-color: #555; cursor: not-allowed; color: #999; }
         
         #status {
             margin-top: 15px;
@@ -83,16 +83,30 @@
             line-height: 1.6;
         }
         b { color: #ddd; }
-        #ai-loader {
-            display: none;
-            margin-top: 10px;
-            text-align: center;
-            color: #ff9800;
-            font-weight: bold;
+        
+        /* 線上大廳區塊 */
+        #online-panel { display: none; margin-top: 15px; padding-top: 15px; border-top: 1px dashed #5a5a8a; }
+        .room-code-display { font-size: 24px; font-weight: bold; color: #ffcc00; text-align: center; letter-spacing: 5px; margin: 10px 0; background: #000; padding: 10px; border-radius: 6px;}
+        
+        /* 彈出通知視窗 */
+        #modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center;
         }
+        .modal-box {
+            background: #1a1a2e; padding: 30px; border-radius: 12px; border: 2px solid #e94560;
+            text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.8); width: 300px;
+        }
+        .modal-box p { font-size: 18px; margin-bottom: 20px; font-weight: bold; }
+        .modal-btns { display: flex; gap: 10px; justify-content: center; }
+        .modal-btns button { padding: 10px 20px; width: 100px; }
+        .btn-green { background-color: #27ae60; }
+        .btn-red { background-color: #c0392b; }
     </style>
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -100,42 +114,69 @@
         <h2>3D 立體四子棋</h2>
         
         <div class="form-group">
-            <label>對戰模式</label>
-            <select id="modeSelect" onchange="resetGame()">
-                <option value="pva" selected>玩家 vs 電腦</option>
-                <option value="pvp">玩家 vs 玩家</option>
+            <label>遊戲模式</label>
+            <select id="modeSelect" onchange="handleModeChange()">
+                <option value="pva" selected>單機：挑戰電腦</option>
+                <option value="pvp">單機：雙人輪流</option>
+                <option value="online">線上：遠端連線</option>
             </select>
         </div>
 
-        <div class="form-group">
+        <div class="form-group" id="ai-group">
             <label>電腦難度</label>
             <select id="aiLevel">
-                <option value="1">L1 新手 (超級簡單)</option>
+                <option value="1">L1 新手 (小六)</option>
                 <option value="2">L2 進階 (攻防)</option>
-                <option value="3">L3 高手 (推演)</option>
-                <option value="4" selected>L4 大師 (大局)</option>
+                <option value="3" selected>L3 高手 (推演)</option>
+                <option value="4">L4 大師 (大局)</option>
             </select>
         </div>
 
-        <div class="btn-grid">
-            <button class="primary" onclick="resetGame()">🔄 重新開始</button>
-            <button id="btn-undo" onclick="undoMove()" disabled>⏪ 悔棋</button>
+        <div id="online-panel">
+            <div id="online-setup">
+                <button class="primary full" onclick="createRoom()" style="margin-bottom: 10px;">🏠 建立房間</button>
+                <div style="display: flex; gap: 5px;">
+                    <input type="text" id="join-code" placeholder="輸入4位數代碼" maxlength="4" style="flex: 1; font-size:16px; text-align:center;">
+                    <button onclick="joinRoom()" style="width: 80px; background:#4CAF50;">加入</button>
+                </div>
+            </div>
+            <div id="online-waiting" style="display: none; text-align: center;">
+                <div>你的房間代碼：</div>
+                <div class="room-code-display" id="my-room-code">----</div>
+                <div style="color: #ff9800;">等待對手加入...</div>
+            </div>
+        </div>
+
+        <div class="btn-grid" id="game-controls">
+            <button class="primary full" id="btn-restart" onclick="resetGame()">🔄 重新開始</button>
+            <button id="btn-undo" onclick="requestUndo()" disabled>⏪ 悔棋</button>
             <button onclick="resetCamera()">📷 視角重設</button>
-            <button id="btn-sound" onclick="toggleSound()">🔊 音效: 開</button>
+            <button id="btn-sound" class="full" onclick="toggleSound()">🔊 音效: 開</button>
         </div>
 
         <div id="status">準備開始...</div>
-        <div id="ai-loader">🤖 AI 思考中...</div>
 
         <div class="instructions">
-            <strong>⌨️ 鍵盤：</strong> 方向鍵移動 / 空白鍵落子<br>
             <strong>🖱️ 滑鼠：</strong> 左鍵落子 / 右鍵旋轉視角<br>
-            滾輪縮放 / 滾輪按住平移
+            <strong>⌨️ 鍵盤：</strong> 方向鍵移動 / 空白鍵落子
+        </div>
+    </div>
+
+    <div id="modal-overlay">
+        <div class="modal-box">
+            <p id="modal-text">對方請求悔棋，是否同意？</p>
+            <div class="modal-btns" id="modal-actions">
+                <button class="btn-green" onclick="respondUndo(true)">✔️ 同意</button>
+                <button class="btn-red" onclick="respondUndo(false)">❌ 拒絕</button>
+            </div>
+            <div class="modal-btns" id="modal-ok-only" style="display: none;">
+                <button class="btn-green" onclick="closeModal()">確定</button>
+            </div>
         </div>
     </div>
 
     <script>
-        // --- 核心邏輯變數 ---
+        // --- 核心變數 ---
         const SIZE = 5;
         let board = []; 
         let currentPlayer = 1; 
@@ -144,7 +185,227 @@
         let hoveredCol = { x: 2, y: 2 }; 
         let moveHistory = []; 
 
-        // 音效系統
+        // --- 線上連線變數 ---
+        const PEER_PREFIX = 'z3d4-tw-'; 
+        let peer = null;
+        let conn = null;
+        let isOnline = false;
+        let isHost = false; // 判斷是否有權限重新開始
+        let myOnlineRole = 0; // 1 = 黑棋, 2 = 白棋
+        
+        // --- 介面控制 ---
+        function handleModeChange() {
+            const mode = document.getElementById('modeSelect').value;
+            const onlinePanel = document.getElementById('online-panel');
+            const aiGroup = document.getElementById('ai-group');
+            const btnRestart = document.getElementById('btn-restart');
+            
+            if (mode === 'online') {
+                onlinePanel.style.display = 'block';
+                aiGroup.style.display = 'none';
+                btnRestart.disabled = true; 
+                gameActive = false;
+                document.getElementById('status').innerText = "請建立或加入房間";
+                document.getElementById('status').style.backgroundColor = "#222";
+                disconnectOnline(); 
+            } else {
+                onlinePanel.style.display = 'none';
+                aiGroup.style.display = mode === 'pva' ? 'flex' : 'none';
+                btnRestart.disabled = false;
+                disconnectOnline();
+                resetGame();
+            }
+        }
+
+        // --- 連線網路功能 (PeerJS) ---
+        function createRoom() {
+            if(peer) peer.destroy();
+            const code = Math.floor(1000 + Math.random() * 9000).toString();
+            
+            document.getElementById('online-setup').style.display = 'none';
+            document.getElementById('online-waiting').style.display = 'block';
+            document.getElementById('my-room-code').innerText = code;
+            document.getElementById('status').innerText = "連接伺服器中...";
+            
+            peer = new Peer(PEER_PREFIX + code);
+            
+            peer.on('open', () => {
+                document.getElementById('status').innerText = "等待對手加入...";
+            });
+
+            peer.on('connection', (connection) => {
+                conn = connection;
+                isOnline = true;
+                isHost = true;
+                setupConnectionListeners();
+                
+                // 🎯 隨機決定房主拿什麼顏色 (1黑 或 2白)
+                myOnlineRole = Math.random() < 0.5 ? 1 : 2;
+                
+                document.getElementById('online-waiting').style.display = 'none';
+                document.getElementById('online-setup').style.display = 'block';
+                startOnlineGame();
+                
+                // 將房主的角色同步給加入的朋友
+                conn.send({ type: 'start', hostRole: myOnlineRole });
+            });
+
+            peer.on('error', (err) => {
+                alert("建立房間失敗，請重試！");
+                handleModeChange();
+            });
+        }
+
+        function joinRoom() {
+            const code = document.getElementById('join-code').value;
+            if(code.length !== 4) return alert("請輸入 4 位數代碼！");
+            
+            document.getElementById('status').innerText = "連線中...";
+            if(peer) peer.destroy();
+            
+            peer = new Peer();
+            peer.on('open', () => {
+                conn = peer.connect(PEER_PREFIX + code);
+                conn.on('open', () => {
+                    isOnline = true;
+                    isHost = false;
+                    setupConnectionListeners();
+                    document.getElementById('status').innerText = "連線成功！等待房主開局...";
+                });
+            });
+
+            peer.on('error', (err) => {
+                alert("找不到該房間或網路錯誤！");
+                document.getElementById('status').innerText = "請建立或加入房間";
+            });
+        }
+
+        function setupConnectionListeners() {
+            conn.on('data', (data) => {
+                if (data.type === 'start') {
+                    // 🎯 朋友的角色是房主的相反
+                    myOnlineRole = data.hostRole === 1 ? 2 : 1;
+                    startOnlineGame();
+                } else if (data.type === 'move') {
+                    executeMoveLocally(data.x, data.y);
+                } else if (data.type === 'undo_req') {
+                    showModal("對方請求悔棋，是否同意？", true);
+                } else if (data.type === 'undo_ans') {
+                    if (data.ans === true) {
+                        closeModal();
+                        executeUndoLocally();
+                    } else {
+                        showModal("對方拒絕了你的悔棋請求。", false);
+                    }
+                }
+            });
+
+            conn.on('close', () => {
+                alert("對方已斷線！");
+                handleModeChange();
+            });
+        }
+
+        function disconnectOnline() {
+            if(conn) conn.close();
+            if(peer) peer.destroy();
+            isOnline = false;
+            isHost = false;
+            myOnlineRole = 0;
+            document.getElementById('online-setup').style.display = 'block';
+            document.getElementById('online-waiting').style.display = 'none';
+            document.getElementById('join-code').value = '';
+        }
+
+        function startOnlineGame() {
+            board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
+            currentPlayer = 1; // 永遠由黑棋先手
+            gameActive = true;
+            isAITurn = false;
+            hoveredCol = { x: 2, y: 2 }; 
+            moveHistory = [];
+            
+            resetHighlight();
+            blackMat.transparent = false; blackMat.opacity = 1;
+            whiteMat.transparent = false; whiteMat.opacity = 1;
+            pieceMeshes.forEach(mesh => scene.remove(mesh));
+            pieceMeshes = [];
+            
+            resetCamera();
+            updateStatusUI();
+            updatePreview();
+            document.getElementById('btn-undo').disabled = true;
+            
+            // 房主才可點擊重新開始
+            document.getElementById('btn-restart').disabled = !isHost;
+        }
+
+        // --- 悔棋與彈窗邏輯 ---
+        function showModal(text, isQuestion) {
+            document.getElementById('modal-overlay').style.display = 'flex';
+            document.getElementById('modal-text').innerText = text;
+            if (isQuestion) {
+                document.getElementById('modal-actions').style.display = 'flex';
+                document.getElementById('modal-ok-only').style.display = 'none';
+            } else {
+                document.getElementById('modal-actions').style.display = 'none';
+                document.getElementById('modal-ok-only').style.display = 'flex';
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('modal-overlay').style.display = 'none';
+        }
+
+        function requestUndo() {
+            if (moveHistory.length === 0) return;
+            
+            if (isOnline) {
+                showModal("已發送悔棋請求，等待對方同意...", false);
+                document.getElementById('modal-ok-only').style.display = 'none'; 
+                conn.send({ type: 'undo_req' });
+            } else {
+                executeUndoLocally();
+            }
+        }
+
+        function respondUndo(isAccept) {
+            conn.send({ type: 'undo_ans', ans: isAccept });
+            closeModal();
+            if (isAccept) executeUndoLocally();
+        }
+
+        function executeUndoLocally() {
+            if (moveHistory.length === 0) return;
+            
+            if (!gameActive) {
+                gameActive = true;
+                resetHighlight();
+            }
+
+            const mode = document.getElementById('modeSelect').value;
+            if (mode === 'pva') {
+                revertOneStep();
+                if (moveHistory.length > 0 && currentPlayer === 2) revertOneStep();
+            } else {
+                revertOneStep();
+            }
+
+            updateStatusUI();
+            updatePreview();
+            document.getElementById('btn-undo').disabled = moveHistory.length === 0;
+        }
+
+        function revertOneStep() {
+            if (moveHistory.length === 0) return;
+            const lastMove = moveHistory.pop();
+            board[lastMove.x][lastMove.y].pop();
+            scene.remove(lastMove.mesh);
+            pieceMeshes = pieceMeshes.filter(m => m !== lastMove.mesh);
+            currentPlayer = lastMove.player;
+        }
+
+        // --- 音效系統 ---
         let audioCtx = null;
         let soundEnabled = true;
 
@@ -236,7 +497,6 @@
             controls.target.set(0, 2.5, 0);
         }
 
-        // 燈光
         scene.add(new THREE.AmbientLight(0xffffff, 0.65));
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
         dirLight.position.set(5, 12, 8);
@@ -245,7 +505,7 @@
         dirLight.shadow.mapSize.height = 1024;
         scene.add(dirLight);
 
-        // 加大底座以容納方向文字
+        // 底座與標籤
         const baseGeo = new THREE.BoxGeometry(6.6, 0.5, 6.6);
         const baseMat = new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.8, metalness: 0.1 });
         const base = new THREE.Mesh(baseGeo, baseMat);
@@ -265,7 +525,6 @@
             
             ctx.fillStyle = 'rgba(0,0,0,0)'; 
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.font = 'bold 50px "Microsoft JhengHei", sans-serif';
@@ -276,7 +535,6 @@
             
             const texture = new THREE.CanvasTexture(canvas);
             texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
-            
             const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
             const plane = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 0.875), material);
             plane.rotation.x = -Math.PI / 2;
@@ -284,28 +542,11 @@
         }
 
         const offset = 2.9; 
-        
-        const labelUp = createDirectionLabel("⬆ 前方 (W / ↑)");
-        labelUp.position.set(0, 0.015, -offset);
-        labelUp.rotation.z = 0; 
-        scene.add(labelUp);
+        const labelUp = createDirectionLabel("⬆ 前方 (W / ↑)"); labelUp.position.set(0, 0.015, -offset); scene.add(labelUp);
+        const labelDown = createDirectionLabel("⬇ 後方 (S / ↓)"); labelDown.position.set(0, 0.015, offset); scene.add(labelDown);
+        const labelLeft = createDirectionLabel("⬅ 左側 (A / ←)"); labelLeft.position.set(-offset, 0.015, 0); labelLeft.rotation.z = -Math.PI / 2; scene.add(labelLeft);
+        const labelRight = createDirectionLabel("右側 (D / →) ➡"); labelRight.position.set(offset, 0.015, 0); labelRight.rotation.z = Math.PI / 2; scene.add(labelRight);
 
-        const labelDown = createDirectionLabel("⬇ 後方 (S / ↓)");
-        labelDown.position.set(0, 0.015, offset);
-        labelDown.rotation.z = 0; 
-        scene.add(labelDown);
-
-        const labelLeft = createDirectionLabel("⬅ 左側 (A / ←)");
-        labelLeft.position.set(-offset, 0.015, 0);
-        labelLeft.rotation.z = -Math.PI / 2; 
-        scene.add(labelLeft);
-
-        const labelRight = createDirectionLabel("右側 (D / →) ➡");
-        labelRight.position.set(offset, 0.015, 0);
-        labelRight.rotation.z = Math.PI / 2; 
-        scene.add(labelRight);
-
-        // 透明滑鼠感應區 (hitbox)
         const columns = [];
         const colGeo = new THREE.BoxGeometry(0.95, 4.3, 0.95);
         const colHitboxMat = new THREE.MeshBasicMaterial({ visible: false });
@@ -361,10 +602,17 @@
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         }
 
+        // 判斷當前是否允許我操作
+        function canIPlay() {
+            if (!gameActive || isAITurn) return false;
+            if (isOnline && currentPlayer !== myOnlineRole) return false;
+            return true;
+        }
+
         window.addEventListener('keydown', (event) => {
-            if (isAITurn) return;
             if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"].includes(event.code)) event.preventDefault();
             if (!gameActive && event.code !== 'Space') return; 
+            if (!canIPlay()) return;
 
             if (!hoveredCol) hoveredCol = { x: 2, y: 2 };
             let { x, y } = hoveredCol;
@@ -374,7 +622,7 @@
             else if (event.code === 'ArrowLeft' || event.code === 'KeyA') x = Math.max(0, x - 1);
             else if (event.code === 'ArrowRight' || event.code === 'KeyD') x = Math.min(SIZE - 1, x + 1);
             else if (event.code === 'Space') {
-                if(gameActive) handleMove(x, y);
+                if(gameActive) initiateMove(x, y);
                 return;
             }
 
@@ -383,19 +631,23 @@
         });
 
         window.addEventListener('click', (event) => {
-            if (!gameActive || isAITurn || event.target.tagName !== "CANVAS" || event.button !== 0) return;
+            if (event.target.tagName !== "CANVAS" || event.button !== 0 || !canIPlay()) return;
             updateMouse(event);
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(columns);
             if (intersects.length > 0) {
                 const { cx, cy } = intersects[0].object.userData;
                 hoveredCol = { x: cx, y: cy }; 
-                handleMove(cx, cy);
+                initiateMove(cx, cy);
             }
         });
 
         window.addEventListener('pointermove', (event) => {
-            if (!gameActive || isAITurn || event.target.tagName !== "CANVAS") return;
+            if (!canIPlay() || event.target.tagName !== "CANVAS") {
+                previewP1.visible = false;
+                previewP2.visible = false;
+                return;
+            }
             updateMouse(event);
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(columns);
@@ -412,8 +664,18 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // --- 核心遊戲流程與歷史紀錄 ---
+        // --- 遊戲流程 ---
         function resetGame() {
+            if (isOnline) {
+                if (isHost) {
+                    // 🎯 房主重開時，再次隨機決定房主的顏色
+                    myOnlineRole = Math.random() < 0.5 ? 1 : 2;
+                    conn.send({ type: 'start', hostRole: myOnlineRole });
+                    startOnlineGame();
+                }
+                return;
+            }
+
             board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => []));
             gameActive = true;
             isAITurn = false;
@@ -421,11 +683,8 @@
             moveHistory = [];
 
             resetHighlight();
-            
-            blackMat.transparent = false;
-            blackMat.opacity = 1;
-            whiteMat.transparent = false;
-            whiteMat.opacity = 1;
+            blackMat.transparent = false; blackMat.opacity = 1;
+            whiteMat.transparent = false; whiteMat.opacity = 1;
 
             pieceMeshes.forEach(mesh => scene.remove(mesh));
             pieceMeshes = [];
@@ -437,7 +696,6 @@
 
             if (mode === 'pva') {
                 currentPlayer = Math.random() < 0.5 ? 1 : 2;
-                
                 if (currentPlayer === 2) {
                     isAITurn = true;
                     updateStatusUI();
@@ -446,7 +704,6 @@
                     document.getElementById('status').style.color = "#fff";
                     document.getElementById('ai-loader').style.display = "block";
                     updatePreview(); 
-                    
                     setTimeout(makeAIMove, 600); 
                     return;
                 }
@@ -458,40 +715,10 @@
             updatePreview(); 
         }
 
-        function undoMove() {
-            if (moveHistory.length === 0 || isAITurn) return;
-            const mode = document.getElementById('modeSelect').value;
-
-            if (!gameActive) {
-                gameActive = true;
-                resetHighlight();
-            }
-
-            if (mode === 'pva') {
-                revertOneStep();
-                if (moveHistory.length > 0 && currentPlayer === 2) revertOneStep();
-            } else {
-                revertOneStep();
-            }
-
-            updateStatusUI();
-            updatePreview();
-            document.getElementById('btn-undo').disabled = moveHistory.length === 0;
-        }
-
-        function revertOneStep() {
-            if (moveHistory.length === 0) return;
-            const lastMove = moveHistory.pop();
-            board[lastMove.x][lastMove.y].pop();
-            scene.remove(lastMove.mesh);
-            pieceMeshes = pieceMeshes.filter(m => m !== lastMove.mesh);
-            currentPlayer = lastMove.player;
-        }
-
         function updatePreview() {
             previewP1.visible = false;
             previewP2.visible = false;
-            if (!gameActive || isAITurn || hoveredCol === null) return;
+            if (!canIPlay() || hoveredCol === null) return;
 
             const { x, y } = hoveredCol;
             if (board[x][y].length >= SIZE) return;
@@ -503,9 +730,13 @@
             activePreview.visible = true;
         }
 
-        function handleMove(x, y) {
+        function initiateMove(x, y) {
             if (board[x][y].length >= SIZE) return; 
+            if (isOnline) conn.send({ type: 'move', x: x, y: y });
+            executeMoveLocally(x, y);
+        }
 
+        function executeMoveLocally(x, y) {
             const z = board[x][y].length;
             const playerToMove = currentPlayer;
             board[x][y].push(playerToMove);
@@ -522,7 +753,12 @@
                 previewP2.visible = false;
                 highlightWinningLine(winResult.line);
                 playSound('win');
-                endGame(`🎉 遊戲結束！${playerToMove === 1 ? '黑棋 (玩家1)' : '白棋 (玩家2/電腦)'} 獲勝！`, playerToMove);
+                
+                let winMsg = `🎉 遊戲結束！${playerToMove === 1 ? '黑棋' : '白棋'} 獲勝！`;
+                if (isOnline) winMsg = playerToMove === myOnlineRole ? "🏆 恭喜！你贏了！" : "💥 遺憾，你輸了！";
+                else if (document.getElementById('modeSelect').value === 'pva') winMsg = playerToMove === 1 ? "🏆 恭喜打敗電腦！" : "🤖 電腦獲勝！";
+                
+                endGame(winMsg, playerToMove);
                 return;
             }
 
@@ -530,17 +766,14 @@
             updateStatusUI();
             updatePreview(); 
 
-            const mode = document.getElementById('modeSelect').value;
-            if (mode === 'pva' && currentPlayer === 2 && gameActive) {
+            if (!isOnline && document.getElementById('modeSelect').value === 'pva' && currentPlayer === 2 && gameActive) {
                 isAITurn = true;
-                previewP1.visible = false;
-                previewP2.visible = false;
+                previewP1.visible = false; previewP2.visible = false;
                 document.getElementById('status').innerText = "🤖 AI 思考中...";
                 document.getElementById('status').style.backgroundColor = "#d35400";
                 document.getElementById('status').style.color = "#fff";
                 document.getElementById('ai-loader').style.display = "block";
                 document.getElementById('btn-undo').disabled = true; 
-                
                 setTimeout(makeAIMove, 100);
             }
         }
@@ -557,20 +790,16 @@
 
         function highlightWinningLine(line) {
             const winSet = new Set(line.map(pt => `${pt[0]},${pt[1]},${pt[2]}`));
-            
             pieceMeshes.forEach(group => {
                 const { x, y, z } = group.userData;
                 const solidMesh = group.children.find(c => c.name === "solid");
                 const edgeMesh = group.children.find(c => c.name === "edge");
-
                 if (winSet.has(`${x},${y},${z}`)) {
                     solidMesh.material = goldMat; 
                     edgeMesh.material.color.setHex(0xffffff); 
                 } else {
-                    solidMesh.material.transparent = true;
-                    solidMesh.material.opacity = 0.3;
-                    edgeMesh.material.transparent = true;
-                    edgeMesh.material.opacity = 0.1;
+                    solidMesh.material.transparent = true; solidMesh.material.opacity = 0.3;
+                    edgeMesh.material.transparent = true; edgeMesh.material.opacity = 0.1;
                 }
             });
         }
@@ -580,33 +809,40 @@
                 const { player } = group.userData;
                 const solidMesh = group.children.find(c => c.name === "solid");
                 const edgeMesh = group.children.find(c => c.name === "edge");
-                
                 solidMesh.material = player === 1 ? blackMat : whiteMat;
-                solidMesh.material.transparent = false;
-                solidMesh.material.opacity = 1;
-                
+                solidMesh.material.transparent = false; solidMesh.material.opacity = 1;
                 edgeMesh.material.color.setHex(player === 1 ? 0x444444 : 0x999999);
-                edgeMesh.material.transparent = false;
-                edgeMesh.material.opacity = 1;
+                edgeMesh.material.transparent = false; edgeMesh.material.opacity = 1;
             });
         }
 
         function updateStatusUI() {
             const statusBox = document.getElementById('status');
-            const aiLoader = document.getElementById('ai-loader');
-            aiLoader.style.display = "none";
+            document.getElementById('ai-loader').style.display = "none";
 
-            if (currentPlayer === 1) {
-                statusBox.innerText = "輪到：玩家 1 (黑棋)";
-                statusBox.style.backgroundColor = "#181818";
-                statusBox.style.color = "#fff";
-                statusBox.style.border = "1px solid #555";
+            if (isOnline) {
+                // 🎯 加入顏色提示
+                let myColor = myOnlineRole === 1 ? "黑棋" : "白棋";
+                if (currentPlayer === myOnlineRole) {
+                    statusBox.innerText = `⭐ 換你落子 (你是${myColor})`;
+                    statusBox.style.backgroundColor = "#27ae60";
+                    statusBox.style.color = "#fff";
+                } else {
+                    statusBox.innerText = `⏳ 等待對手... (你是${myColor})`;
+                    statusBox.style.backgroundColor = "#555";
+                    statusBox.style.color = "#ccc";
+                }
             } else {
-                const isAI = document.getElementById('modeSelect').value === 'pva';
-                statusBox.innerText = isAI ? "輪到：電腦 AI (白棋)" : "輪到：玩家 2 (白棋)";
-                statusBox.style.backgroundColor = "#e0e0e0";
-                statusBox.style.color = "#000";
-                statusBox.style.border = "1px solid #aaa";
+                if (currentPlayer === 1) {
+                    statusBox.innerText = "輪到：玩家 1 (黑棋)";
+                    statusBox.style.backgroundColor = "#181818";
+                    statusBox.style.color = "#fff";
+                } else {
+                    const isAI = document.getElementById('modeSelect').value === 'pva';
+                    statusBox.innerText = isAI ? "輪到：電腦 AI (白棋)" : "輪到：玩家 2 (白棋)";
+                    statusBox.style.backgroundColor = "#e0e0e0";
+                    statusBox.style.color = "#000";
+                }
             }
         }
 
@@ -615,23 +851,23 @@
             previewP1.visible = false;
             previewP2.visible = false;
             const statusBox = document.getElementById('status');
-            const aiLoader = document.getElementById('ai-loader');
-            aiLoader.style.display = "none";
+            document.getElementById('ai-loader').style.display = "none";
             statusBox.innerText = msg;
-            statusBox.style.backgroundColor = winningPlayer === 1 ? "#181818" : "#e0e0e0";
-            statusBox.style.color = winningPlayer === 1 ? "#fff" : "#000";
+            
+            if(isOnline) {
+                statusBox.style.backgroundColor = winningPlayer === myOnlineRole ? "#d4af37" : "#555";
+            } else {
+                statusBox.style.backgroundColor = winningPlayer === 1 ? "#181818" : "#e0e0e0";
+                statusBox.style.color = winningPlayer === 1 ? "#fff" : "#000";
+            }
             document.getElementById('btn-undo').disabled = false;
         }
 
         function checkWinLogic(player) {
             for (let line of winningLines) {
-                let match = 0;
-                let matchedPoints = [];
+                let match = 0, matchedPoints = [];
                 for (let pt of line) {
-                    if (board[pt[0]][pt[1]][pt[2]] === player) {
-                        match++;
-                        matchedPoints.push(pt);
-                    }
+                    if (board[pt[0]][pt[1]][pt[2]] === player) { match++; matchedPoints.push(pt); }
                 }
                 if (match === 4) return { win: true, line: matchedPoints };
             }
@@ -642,10 +878,7 @@
             if (!gameActive) return;
             const level = parseInt(document.getElementById('aiLevel').value);
             let bestMove = getBestMove(level);
-
-            if (bestMove) {
-                handleMove(bestMove.x, bestMove.y);
-            }
+            if (bestMove) executeMoveLocally(bestMove.x, bestMove.y);
             isAITurn = false;
             if(gameActive) document.getElementById('btn-undo').disabled = false;
             updatePreview(); 
@@ -658,39 +891,25 @@
                     if (board[x][y].length < SIZE) moves.push({x, y});
                 }
             }
-            return moves.sort((a, b) => {
-                return (Math.abs(2 - a.x) + Math.abs(2 - a.y)) - (Math.abs(2 - b.x) + Math.abs(2 - b.y));
-            });
+            return moves.sort((a, b) => { return (Math.abs(2 - a.x) + Math.abs(2 - a.y)) - (Math.abs(2 - b.x) + Math.abs(2 - b.y)); });
         }
 
-        // 🎯 [重點更新] 完美模擬小學六年級的決策腦袋
         function getBestMove(level) {
             let moves = getValidMoves();
             if (moves.length === 0) return null;
 
             let depth = (level === 1 || level === 2) ? 1 : level === 3 ? 2 : 3; 
-            let bestScore = -Infinity;
-            let bestMove = moves[0];
-            let alpha = -Infinity;
-            let beta = Infinity;
+            let bestScore = -Infinity, bestMove = moves[0], alpha = -Infinity, beta = Infinity;
 
             for (let move of moves) {
                 board[move.x][move.y].push(2); 
                 let score = checkWinLogic(2).win ? 100000 : minimax(depth - 1, alpha, beta, false);
                 board[move.x][move.y].pop(); 
 
-                if (level === 1) {
-                    // 小六程度：雜訊範圍在 -200 ~ +200 之間。
-                    // 這樣不會蓋過防守聽牌的 500 分，但會讓平時的佈局很憑感覺、缺乏長遠規劃。
-                    score += (Math.random() * 400 - 200);
-                } else if (level === 2) {
-                    score += (Math.random() * 100 - 50);
-                }
+                if (level === 1) score += (Math.random() * 400 - 200);
+                else if (level === 2) score += (Math.random() * 100 - 50);
 
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestMove = move;
-                }
+                if (score > bestScore) { bestScore = score; bestMove = move; }
                 alpha = Math.max(alpha, bestScore);
             }
             return bestMove;
@@ -735,25 +954,19 @@
                 let p1 = 0, p2 = 0;
                 for (let pt of line) {
                     let cell = board[pt[0]][pt[1]][pt[2]];
-                    if (cell === 1) p1++;
-                    else if (cell === 2) p2++;
+                    if (cell === 1) p1++; else if (cell === 2) p2++;
                 }
                 if (p1 > 0 && p2 === 0) {
-                    if (p1 === 1) score -= 1;
-                    else if (p1 === 2) score -= 10;
-                    else if (p1 === 3) score -= 500; 
+                    if (p1 === 1) score -= 1; else if (p1 === 2) score -= 10; else if (p1 === 3) score -= 500; 
                 } else if (p2 > 0 && p1 === 0) {
-                    if (p2 === 1) score += 1;
-                    else if (p2 === 2) score += 10;
-                    else if (p2 === 3) score += 500;
+                    if (p2 === 1) score += 1; else if (p2 === 2) score += 10; else if (p2 === 3) score += 500;
                 }
             }
             for (let x = 0; x < SIZE; x++) {
                 for (let y = 0; y < SIZE; y++) {
                     for (let z = 0; z < board[x][y].length; z++) {
                         let centerWeight = (2 - Math.abs(2 - x)) + (2 - Math.abs(2 - y));
-                        if (board[x][y][z] === 2) score += centerWeight;
-                        else score -= centerWeight;
+                        if (board[x][y][z] === 2) score += centerWeight; else score -= centerWeight;
                     }
                 }
             }
@@ -768,7 +981,6 @@
             renderer.render(scene, camera);
         }
         animate();
-
     </script>
 </body>
 </html>
